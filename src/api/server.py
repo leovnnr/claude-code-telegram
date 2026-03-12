@@ -4,6 +4,7 @@ Runs in the same process as the bot, sharing the event loop.
 Receives external webhooks and publishes them as events on the bus.
 """
 
+import time as _time
 import uuid
 from typing import Any, Dict, Optional
 
@@ -17,6 +18,8 @@ from ..storage.database import DatabaseManager
 from .auth import verify_github_signature, verify_shared_secret
 
 logger = structlog.get_logger()
+
+_start_time = _time.time()
 
 
 def create_api_app(
@@ -34,8 +37,32 @@ def create_api_app(
     )
 
     @app.get("/health")
-    async def health_check() -> Dict[str, str]:
-        return {"status": "ok"}
+    async def health_check() -> Dict[str, Any]:
+        components: Dict[str, str] = {}
+        status = "ok"
+
+        # Check database
+        if db_manager:
+            try:
+                async with db_manager.get_connection() as conn:
+                    await conn.execute("SELECT 1")
+                components["database"] = "ok"
+            except Exception:
+                components["database"] = "error"
+                status = "degraded"
+
+        # Check event bus
+        components["event_bus"] = "ok" if event_bus._running else "error"
+        if components["event_bus"] == "error":
+            status = "degraded"
+
+        uptime = int(_time.time() - _start_time)
+
+        return {
+            "status": status,
+            "components": components,
+            "uptime_seconds": uptime,
+        }
 
     @app.post("/webhooks/{provider}")
     async def receive_webhook(

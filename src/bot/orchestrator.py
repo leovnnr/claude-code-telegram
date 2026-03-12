@@ -114,6 +114,30 @@ class MessageOrchestrator:
     def __init__(self, settings: Settings, deps: Dict[str, Any]):
         self.settings = settings
         self.deps = deps
+        self._user_locks: Dict[int, asyncio.Lock] = {}
+        self._recent_messages: Dict[tuple, float] = {}  # (user_id, text_hash) -> timestamp
+        self._dedup_ttl: float = 5.0  # seconds
+
+    def _is_duplicate_message(self, user_id: int, text: str) -> bool:
+        """Check if this message was already processed recently."""
+        import hashlib
+
+        key = (user_id, hashlib.md5(text.encode()).hexdigest())
+        now = time.time()
+        # Clean old entries
+        self._recent_messages = {
+            k: v for k, v in self._recent_messages.items() if now - v < self._dedup_ttl
+        }
+        if key in self._recent_messages:
+            return True
+        self._recent_messages[key] = now
+        return False
+
+    def _get_user_lock(self, user_id: int) -> asyncio.Lock:
+        """Get or create a per-user lock for serializing requests."""
+        if user_id not in self._user_locks:
+            self._user_locks[user_id] = asyncio.Lock()
+        return self._user_locks[user_id]
 
     def _inject_deps(self, handler: Callable) -> Callable:  # type: ignore[type-arg]
         """Wrap handler to inject dependencies into context.bot_data."""
@@ -826,12 +850,28 @@ class MessageOrchestrator:
         user_id = update.effective_user.id
         message_text = update.message.text
 
+        # Deduplication check
+        if self._is_duplicate_message(user_id, message_text):
+            logger.info("Duplicate message ignored", user_id=user_id)
+            return
+
         logger.info(
             "Agentic text message",
             user_id=user_id,
             message_length=len(message_text),
         )
 
+        async with self._get_user_lock(user_id):
+            await self._agentic_text_impl(update, context, user_id, message_text)
+
+    async def _agentic_text_impl(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        user_id: int,
+        message_text: str,
+    ) -> None:
+        """Inner implementation of agentic_text, called under user lock."""
         # Rate limit check
         rate_limiter = context.bot_data.get("rate_limiter")
         if rate_limiter:
@@ -962,43 +1002,51 @@ class MessageOrchestrator:
 
         # Send text messages (skip if caption was already embedded in photos)
         if not caption_sent:
-            for i, message in enumerate(formatted_messages):
-                if not message.text or not message.text.strip():
-                    continue
-                try:
-                    await update.message.reply_text(
-                        message.text,
-                        parse_mode=message.parse_mode,
-                        reply_markup=None,  # No keyboards in agentic mode
-                        reply_to_message_id=(
-                            update.message.message_id if i == 0 else None
-                        ),
-                    )
-                    if i < len(formatted_messages) - 1:
-                        await asyncio.sleep(0.5)
-                except Exception as send_err:
-                    logger.warning(
-                        "Failed to send HTML response, retrying as plain text",
-                        error=str(send_err),
-                        message_index=i,
-                    )
+            # Send as .md file if response has too many parts
+            from .utils.long_response import send_long_response_as_file
+
+            sent_as_file = await send_long_response_as_file(
+                update, formatted_messages
+            )
+
+            if not sent_as_file:
+                for i, message in enumerate(formatted_messages):
+                    if not message.text or not message.text.strip():
+                        continue
                     try:
                         await update.message.reply_text(
                             message.text,
-                            reply_markup=None,
+                            parse_mode=message.parse_mode,
+                            reply_markup=None,  # No keyboards in agentic mode
                             reply_to_message_id=(
                                 update.message.message_id if i == 0 else None
                             ),
                         )
-                    except Exception as plain_err:
-                        await update.message.reply_text(
-                            f"Failed to deliver response "
-                            f"(Telegram error: {str(plain_err)[:150]}). "
-                            f"Please try again.",
-                            reply_to_message_id=(
-                                update.message.message_id if i == 0 else None
-                            ),
+                        if i < len(formatted_messages) - 1:
+                            await asyncio.sleep(0.5)
+                    except Exception as send_err:
+                        logger.warning(
+                            "Failed to send HTML response, retrying as plain text",
+                            error=str(send_err),
+                            message_index=i,
                         )
+                        try:
+                            await update.message.reply_text(
+                                message.text,
+                                reply_markup=None,
+                                reply_to_message_id=(
+                                    update.message.message_id if i == 0 else None
+                                ),
+                            )
+                        except Exception as plain_err:
+                            await update.message.reply_text(
+                                f"Failed to deliver response "
+                                f"(Telegram error: {str(plain_err)[:150]}). "
+                                f"Please try again.",
+                                reply_to_message_id=(
+                                    update.message.message_id if i == 0 else None
+                                ),
+                            )
 
             # Send images separately if caption wasn't used
             if images:

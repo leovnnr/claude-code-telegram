@@ -9,6 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 import structlog
 
 from ..config.settings import Settings
+from .exceptions import ClaudeSessionExpiredError
 from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
 from .session import SessionManager
 
@@ -86,10 +87,8 @@ class ClaudeIntegration:
                     continue_session=should_continue,
                     stream_callback=on_stream,
                 )
-            except Exception as resume_error:
-                # If resume failed (e.g., session expired/missing on Claude's side),
-                # retry as a fresh session.  The CLI returns a generic exit-code-1
-                # when the session is gone, so we catch *any* error during resume.
+            except ClaudeSessionExpiredError as resume_error:
+                # Session expired/missing on Claude's side — retry as fresh session.
                 if should_continue:
                     logger.warning(
                         "Session resume failed, starting fresh session",

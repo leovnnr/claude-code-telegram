@@ -29,6 +29,17 @@ from ..utils.image_extractor import (
 logger = structlog.get_logger()
 
 
+def _sanitize_paths(text: str) -> str:
+    """Remove server filesystem paths from error messages."""
+    import re
+
+    # Replace home directory paths
+    text = re.sub(r"/home/[^/]+/", "~/", text)
+    # Replace common absolute paths that leak server structure
+    text = re.sub(r"~/[^\s:'\"]+/", "[...]/", text)
+    return text
+
+
 async def _format_progress_update(update_obj) -> Optional[str]:
     """Format progress updates with enhanced context and visual indicators."""
     if update_obj.type == "tool_result":
@@ -105,10 +116,10 @@ def _format_error_message(error: Exception | str) -> str:
     """
     # Normalise: keep both the object and a string representation.
     if isinstance(error, str):
-        error_str = error
+        error_str = _sanitize_paths(error)
         error_obj: Exception | None = None
     else:
-        error_str = str(error)
+        error_str = _sanitize_paths(str(error))
         error_obj = error
 
     # --- Dispatch on exception type first (most specific) ---
@@ -279,7 +290,7 @@ def _format_error_message(error: Exception | str) -> str:
 
 def _format_process_error(error_str: str) -> str:
     """Format a Claude process/SDK error with the actual details."""
-    safe_error = escape_html(error_str)
+    safe_error = escape_html(_sanitize_paths(error_str))
     if len(safe_error) > 500:
         safe_error = safe_error[:500] + "..."
 
@@ -490,46 +501,54 @@ async def handle_text_message(
                         )
 
         if not caption_sent:
-            # Send formatted responses (may be multiple messages)
-            for i, message in enumerate(formatted_messages):
-                try:
-                    await update.message.reply_text(
-                        message.text,
-                        parse_mode=message.parse_mode,
-                        reply_markup=message.reply_markup,
-                        reply_to_message_id=(
-                            update.message.message_id if i == 0 else None
-                        ),
-                    )
-                    if i < len(formatted_messages) - 1:
-                        await asyncio.sleep(0.5)
-                except Exception as send_err:
-                    logger.warning(
-                        "Failed to send HTML response, retrying as plain text",
-                        error=str(send_err),
-                        message_index=i,
-                    )
+            # Send as .md file if response has too many parts
+            from ..utils.long_response import send_long_response_as_file
+
+            sent_as_file = await send_long_response_as_file(
+                update, formatted_messages
+            )
+
+            if not sent_as_file:
+                # Send formatted responses (may be multiple messages)
+                for i, message in enumerate(formatted_messages):
                     try:
                         await update.message.reply_text(
                             message.text,
+                            parse_mode=message.parse_mode,
                             reply_markup=message.reply_markup,
                             reply_to_message_id=(
                                 update.message.message_id if i == 0 else None
                             ),
                         )
-                    except Exception as plain_err:
-                        logger.error(
-                            "Failed to send plain text fallback response",
-                            error=str(plain_err),
+                        if i < len(formatted_messages) - 1:
+                            await asyncio.sleep(0.5)
+                    except Exception as send_err:
+                        logger.warning(
+                            "Failed to send HTML response, retrying as plain text",
+                            error=str(send_err),
+                            message_index=i,
                         )
-                        await update.message.reply_text(
-                            f"Failed to deliver response "
-                            f"(Telegram error: {str(plain_err)[:150]}). "
-                            f"Please try again.",
-                            reply_to_message_id=(
-                                update.message.message_id if i == 0 else None
-                            ),
-                        )
+                        try:
+                            await update.message.reply_text(
+                                message.text,
+                                reply_markup=message.reply_markup,
+                                reply_to_message_id=(
+                                    update.message.message_id if i == 0 else None
+                                ),
+                            )
+                        except Exception as plain_err:
+                            logger.error(
+                                "Failed to send plain text fallback response",
+                                error=str(plain_err),
+                            )
+                            await update.message.reply_text(
+                                f"Failed to deliver response "
+                                f"(Telegram error: {str(plain_err)[:150]}). "
+                                f"Please try again.",
+                                reply_to_message_id=(
+                                    update.message.message_id if i == 0 else None
+                                ),
+                            )
 
             # Send images separately
             if images:
@@ -845,17 +864,26 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # Delete progress message
             await claude_progress_msg.delete()
 
-            # Send responses
-            for i, message in enumerate(formatted_messages):
-                await update.message.reply_text(
-                    message.text,
-                    parse_mode=message.parse_mode,
-                    reply_markup=message.reply_markup,
-                    reply_to_message_id=(update.message.message_id if i == 0 else None),
-                )
+            # Send responses (as file if too many parts)
+            from ..utils.long_response import send_long_response_as_file
 
-                if i < len(formatted_messages) - 1:
-                    await asyncio.sleep(0.5)
+            sent_as_file = await send_long_response_as_file(
+                update, formatted_messages
+            )
+
+            if not sent_as_file:
+                for i, message in enumerate(formatted_messages):
+                    await update.message.reply_text(
+                        message.text,
+                        parse_mode=message.parse_mode,
+                        reply_markup=message.reply_markup,
+                        reply_to_message_id=(
+                            update.message.message_id if i == 0 else None
+                        ),
+                    )
+
+                    if i < len(formatted_messages) - 1:
+                        await asyncio.sleep(0.5)
 
         except Exception as e:
             await claude_progress_msg.edit_text(
@@ -967,19 +995,26 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 # Delete progress message
                 await claude_progress_msg.delete()
 
-                # Send responses
-                for i, message in enumerate(formatted_messages):
-                    await update.message.reply_text(
-                        message.text,
-                        parse_mode=message.parse_mode,
-                        reply_markup=message.reply_markup,
-                        reply_to_message_id=(
-                            update.message.message_id if i == 0 else None
-                        ),
-                    )
+                # Send responses (as file if too many parts)
+                from ..utils.long_response import send_long_response_as_file
 
-                    if i < len(formatted_messages) - 1:
-                        await asyncio.sleep(0.5)
+                sent_as_file = await send_long_response_as_file(
+                    update, formatted_messages
+                )
+
+                if not sent_as_file:
+                    for i, message in enumerate(formatted_messages):
+                        await update.message.reply_text(
+                            message.text,
+                            parse_mode=message.parse_mode,
+                            reply_markup=message.reply_markup,
+                            reply_to_message_id=(
+                                update.message.message_id if i == 0 else None
+                            ),
+                        )
+
+                        if i < len(formatted_messages) - 1:
+                            await asyncio.sleep(0.5)
 
             except Exception as e:
                 await claude_progress_msg.edit_text(

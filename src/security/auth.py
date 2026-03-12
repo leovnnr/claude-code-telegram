@@ -139,6 +139,78 @@ class InMemoryTokenStorage(TokenStorage):
         self._tokens.pop(user_id, None)
 
 
+class SQLiteTokenStorage(TokenStorage):
+    """SQLite-backed token storage for production use."""
+
+    def __init__(self, db_manager: Any) -> None:
+        from ..storage.database import DatabaseManager
+
+        self.db: DatabaseManager = db_manager
+
+    async def store_token(
+        self, user_id: int, token_hash: str, expires_at: datetime
+    ) -> None:
+        """Store token hash in SQLite."""
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT OR REPLACE INTO user_tokens
+                    (user_id, token_hash, expires_at, created_at, is_active)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    token_hash,
+                    expires_at.isoformat(),
+                    datetime.now(UTC).isoformat(),
+                    True,
+                ),
+            )
+            await conn.commit()
+
+    async def get_user_token(self, user_id: int) -> Optional[Dict[str, Any]]:
+        """Get token data from SQLite."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM user_tokens WHERE user_id = ? AND is_active = 1",
+                (user_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            expires_at = (
+                datetime.fromisoformat(row["expires_at"])
+                if isinstance(row["expires_at"], str)
+                else row["expires_at"]
+            )
+            if expires_at <= datetime.now(UTC):
+                # Token expired, deactivate
+                await conn.execute(
+                    "UPDATE user_tokens SET is_active = 0 WHERE user_id = ?",
+                    (user_id,),
+                )
+                await conn.commit()
+                return None
+            return {
+                "hash": row["token_hash"],
+                "expires_at": expires_at,
+                "created_at": (
+                    datetime.fromisoformat(row["created_at"])
+                    if isinstance(row["created_at"], str)
+                    else row["created_at"]
+                ),
+            }
+
+    async def revoke_token(self, user_id: int) -> None:
+        """Revoke token in SQLite."""
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                "UPDATE user_tokens SET is_active = 0 WHERE user_id = ?",
+                (user_id,),
+            )
+            await conn.commit()
+
+
 class TokenAuthProvider(AuthProvider):
     """Token-based authentication."""
 

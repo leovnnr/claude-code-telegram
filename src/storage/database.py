@@ -310,6 +310,27 @@ class DatabaseManager:
                     ON project_threads(project_slug);
                 """,
             ),
+            (
+                5,
+                """
+                -- Add timezone support for scheduled jobs
+                ALTER TABLE scheduled_jobs ADD COLUMN timezone TEXT;
+                """,
+            ),
+            (
+                6,
+                """
+                -- Extend audit_log for full audit storage support
+                ALTER TABLE audit_log ADD COLUMN details JSON;
+                ALTER TABLE audit_log ADD COLUMN session_id TEXT;
+                ALTER TABLE audit_log ADD COLUMN risk_level TEXT DEFAULT 'low';
+
+                CREATE INDEX IF NOT EXISTS idx_audit_log_event_type
+                    ON audit_log(event_type);
+                CREATE INDEX IF NOT EXISTS idx_audit_log_risk_level
+                    ON audit_log(risk_level);
+                """,
+            ),
         ]
 
     async def _init_pool(self):

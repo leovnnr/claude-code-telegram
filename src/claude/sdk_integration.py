@@ -33,6 +33,7 @@ from .exceptions import (
     ClaudeMCPError,
     ClaudeParsingError,
     ClaudeProcessError,
+    ClaudeSessionExpiredError,
     ClaudeTimeoutError,
 )
 from .monitor import _is_claude_internal_path, check_bash_directory_boundary
@@ -412,6 +413,19 @@ class ClaudeSDKManager:
             # Check if the process error is MCP-related
             if "mcp" in error_str.lower():
                 raise ClaudeMCPError(f"MCP server error: {error_str}")
+            # Check if the process error indicates an expired/missing session
+            error_lower = error_str.lower()
+            session_expired_indicators = [
+                "no conversation found",
+                "session not found",
+                "invalid session",
+                "session expired",
+                "not found",
+            ]
+            if any(indicator in error_lower for indicator in session_expired_indicators):
+                raise ClaudeSessionExpiredError(
+                    f"Claude session expired: {error_str}"
+                )
             raise ClaudeProcessError(f"Claude process error: {error_str}")
 
         except CLIConnectionError as e:
