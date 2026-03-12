@@ -21,6 +21,10 @@ class ClaudeSessionError(ClaudeError):
     """Session management error."""
 
 
+class ClaudeSessionExpiredError(ClaudeSessionError):
+    """Session expired or not found on Claude's side."""
+
+
 class ClaudeMCPError(ClaudeError):
     """MCP server connection or configuration error."""
 

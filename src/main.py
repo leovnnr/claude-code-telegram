@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -26,10 +27,10 @@ from src.exceptions import ConfigurationError
 from src.notifications.service import NotificationService
 from src.projects import ProjectThreadManager, load_project_registry
 from src.scheduler.scheduler import JobScheduler
-from src.security.audit import AuditLogger, InMemoryAuditStorage
+from src.security.audit import AuditLogger, SQLiteAuditStorage
 from src.security.auth import (
     AuthenticationManager,
-    InMemoryTokenStorage,
+    SQLiteTokenStorage,
     TokenAuthProvider,
     WhitelistAuthProvider,
 )
@@ -112,7 +113,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
 
     # Add token provider if enabled
     if config.enable_token_auth:
-        token_storage = InMemoryTokenStorage()  # TODO: Use database storage
+        token_storage = SQLiteTokenStorage(storage.db_manager)
         providers.append(TokenAuthProvider(config.auth_token_secret, token_storage))
 
     # Fall back to allowing all users in development mode
@@ -133,7 +134,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
     rate_limiter = RateLimiter(config)
 
     # Create audit storage and logger
-    audit_storage = InMemoryAuditStorage()  # TODO: Use database storage in production
+    audit_storage = SQLiteAuditStorage(storage.db_manager)
     audit_logger = AuditLogger(audit_storage)
 
     # Create Claude integration components with persistent storage
@@ -370,6 +371,12 @@ async def main() -> None:
     """Main application entry point."""
     args = parse_args()
     setup_logging(debug=args.debug)
+
+    # Clean inherited Claude Code env vars so the SDK can spawn subprocesses.
+    # Without this, launching the bot from a Claude Code terminal would cause
+    # all SDK-spawned Claude processes to fail with "nested session" errors.
+    for var in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"):
+        os.environ.pop(var, None)
 
     logger = structlog.get_logger()
     logger.info("Starting Claude Code Telegram Bot", version=__version__)

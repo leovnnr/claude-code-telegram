@@ -7,12 +7,17 @@ Features:
 - Security violations
 """
 
+from __future__ import annotations
+
 import json
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import structlog
+
+if TYPE_CHECKING:
+    from ..storage.database import DatabaseManager
 
 # from src.exceptions import SecurityError  # Future use
 
@@ -120,6 +125,117 @@ class InMemoryAuditStorage(AuditStorage):
         # Sort by timestamp (newest first) and limit
         filtered_events.sort(key=lambda e: e.timestamp, reverse=True)
         return filtered_events[:limit]
+
+    async def get_security_violations(
+        self, user_id: Optional[int] = None, limit: int = 100
+    ) -> List[AuditEvent]:
+        """Get security violations."""
+        return await self.get_events(
+            user_id=user_id, event_type="security_violation", limit=limit
+        )
+
+
+class SQLiteAuditStorage(AuditStorage):
+    """SQLite-backed audit storage for production use."""
+
+    def __init__(self, db_manager: DatabaseManager) -> None:
+        self.db = db_manager
+
+    async def store_event(self, event: AuditEvent) -> None:
+        """Store audit event in SQLite."""
+        # Log high-risk events immediately
+        if event.risk_level in ["high", "critical"]:
+            logger.warning(
+                "High-risk security event",
+                event_type=event.event_type,
+                user_id=event.user_id,
+                risk_level=event.risk_level,
+                details=event.details,
+            )
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO audit_log (user_id, event_type, success, details,
+                                       ip_address, session_id, risk_level, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.user_id,
+                    event.event_type,
+                    event.success,
+                    json.dumps(event.details),
+                    event.ip_address,
+                    event.session_id,
+                    event.risk_level,
+                    event.timestamp.isoformat(),
+                ),
+            )
+            await conn.commit()
+
+    async def get_events(
+        self,
+        user_id: Optional[int] = None,
+        event_type: Optional[str] = None,
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None,
+        limit: int = 100,
+    ) -> List[AuditEvent]:
+        """Retrieve audit events with filters."""
+        query = "SELECT * FROM audit_log WHERE 1=1"
+        params: list = []
+        if user_id is not None:
+            query += " AND user_id = ?"
+            params.append(user_id)
+        if event_type is not None:
+            query += " AND event_type = ?"
+            params.append(event_type)
+        if start_time is not None:
+            query += " AND timestamp >= ?"
+            params.append(start_time.isoformat())
+        if end_time is not None:
+            query += " AND timestamp <= ?"
+            params.append(end_time.isoformat())
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(query, params)
+            rows = await cursor.fetchall()
+            events = []
+            for row in rows:
+                events.append(
+                    AuditEvent(
+                        timestamp=(
+                            datetime.fromisoformat(row["timestamp"])
+                            if isinstance(row["timestamp"], str)
+                            else row["timestamp"]
+                        ),
+                        user_id=row["user_id"],
+                        event_type=row["event_type"],
+                        success=bool(row["success"]),
+                        details=(
+                            json.loads(row["details"])
+                            if isinstance(row["details"], str)
+                            else (row["details"] or {})
+                        ),
+                        ip_address=(
+                            row["ip_address"]
+                            if "ip_address" in row.keys()
+                            else None
+                        ),
+                        session_id=(
+                            row["session_id"]
+                            if "session_id" in row.keys()
+                            else None
+                        ),
+                        risk_level=(
+                            row["risk_level"]
+                            if "risk_level" in row.keys()
+                            else "low"
+                        ),
+                    )
+                )
+            return events
 
     async def get_security_violations(
         self, user_id: Optional[int] = None, limit: int = 100
