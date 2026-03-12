@@ -105,6 +105,7 @@ class AgentHandler:
                 prompt=prompt,
                 working_directory=working_dir,
                 user_id=self.default_user_id,
+                force_new=True,
             )
 
             if response.content:
