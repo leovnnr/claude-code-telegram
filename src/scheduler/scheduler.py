@@ -54,6 +54,7 @@ class JobScheduler:
         working_directory: Optional[Path] = None,
         skill_name: Optional[str] = None,
         created_by: int = 0,
+        timezone: Optional[str] = None,
     ) -> str:
         """Add a new scheduled job.
 
@@ -65,11 +66,12 @@ class JobScheduler:
             working_directory: Working directory for Claude execution.
             skill_name: Optional skill to invoke.
             created_by: Telegram user ID of the creator.
+            timezone: Optional timezone (e.g. "Europe/Paris") for the cron schedule.
 
         Returns:
             The job ID.
         """
-        trigger = CronTrigger.from_crontab(cron_expression)
+        trigger = CronTrigger.from_crontab(cron_expression, timezone=timezone)
         work_dir = working_directory or self.default_working_directory
 
         job = self._scheduler.add_job(
@@ -95,6 +97,7 @@ class JobScheduler:
             working_directory=str(work_dir),
             skill_name=skill_name,
             created_by=created_by,
+            timezone=timezone,
         )
 
         logger.info(
@@ -162,7 +165,10 @@ class JobScheduler:
             for row in rows:
                 row_dict = dict(row)
                 try:
-                    trigger = CronTrigger.from_crontab(row_dict["cron_expression"])
+                    trigger = CronTrigger.from_crontab(
+                        row_dict["cron_expression"],
+                        timezone=row_dict.get("timezone"),
+                    )
 
                     # Parse target_chat_ids from stored string
                     chat_ids_str = row_dict.get("target_chat_ids", "")
@@ -212,6 +218,7 @@ class JobScheduler:
         working_directory: str,
         skill_name: Optional[str],
         created_by: int,
+        timezone: Optional[str] = None,
     ) -> None:
         """Persist a job definition to the database."""
         chat_ids_str = ",".join(str(cid) for cid in target_chat_ids)
@@ -220,8 +227,8 @@ class JobScheduler:
                 """
                 INSERT OR REPLACE INTO scheduled_jobs
                 (job_id, job_name, cron_expression, prompt, target_chat_ids,
-                 working_directory, skill_name, created_by, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                 working_directory, skill_name, created_by, is_active, timezone)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 """,
                 (
                     job_id,
@@ -232,6 +239,7 @@ class JobScheduler:
                     working_directory,
                     skill_name,
                     created_by,
+                    timezone,
                 ),
             )
             await conn.commit()

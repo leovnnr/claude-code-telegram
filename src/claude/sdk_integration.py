@@ -210,6 +210,7 @@ class ClaudeSDKManager:
                 system_prompt=base_prompt,
                 setting_sources=["project"],
                 stderr=_stderr_callback,
+                max_buffer_size=10 * 1024 * 1024,  # 10 MB (default 1 MB too small for large tool results)
             )
 
             # Pass MCP server configuration if enabled

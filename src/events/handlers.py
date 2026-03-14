@@ -127,12 +127,39 @@ class AgentHandler:
                             originating_event_id=event.id,
                         )
                     )
-        except Exception:
+        except Exception as exc:
             logger.exception(
                 "Agent execution failed for scheduled event",
                 job_id=event.job_id,
                 event_id=event.id,
             )
+
+            # Notify target chats about the failure
+            error_name = type(exc).__name__
+            error_detail = str(exc)
+            # Truncate long error messages
+            if len(error_detail) > 200:
+                error_detail = error_detail[:200] + "..."
+            error_text = (
+                f"Job {event.job_name or event.job_id} echoue.\n"
+                f"Erreur : {error_name}\n"
+                f"Detail : {error_detail}"
+            )
+            target_chats = event.target_chat_ids or [0]
+            for chat_id in target_chats:
+                try:
+                    await self.event_bus.publish(
+                        AgentResponseEvent(
+                            chat_id=chat_id,
+                            text=error_text,
+                            originating_event_id=event.id,
+                        )
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to send error notification for scheduled event",
+                        chat_id=chat_id,
+                    )
 
     def _build_webhook_prompt(self, event: WebhookEvent) -> str:
         """Build a Claude prompt from a webhook event."""
