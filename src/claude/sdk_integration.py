@@ -278,6 +278,7 @@ class ClaudeSDKManager:
         stream_callback: Optional[Callable[[StreamUpdate], None]] = None,
         interrupt_event: Optional[asyncio.Event] = None,
         images: Optional[List[Dict[str, str]]] = None,
+        timeout_override: Optional[int] = None,
     ) -> ClaudeResponse:
         """Execute Claude Code command via SDK."""
         start_time = asyncio.get_event_loop().time()
@@ -321,8 +322,8 @@ class ClaudeSDKManager:
 
             # Build Claude Agent options
             options = ClaudeAgentOptions(
-                max_turns=self.config.claude_max_turns,
                 model=self.config.claude_model or None,
+                max_turns=self.config.claude_max_turns,
                 max_budget_usd=self.config.claude_max_cost_per_request,
                 cwd=str(working_directory),
                 allowed_tools=sdk_allowed_tools,
@@ -435,6 +436,7 @@ class ClaudeSDKManager:
                     await client.disconnect()
 
             # Execute with timeout and retry, racing against optional interrupt
+            effective_timeout = timeout_override or self.config.claude_timeout_seconds
             max_attempts = max(1, self.config.claude_retry_max_attempts)
             last_exc: Optional[BaseException] = None
 
@@ -477,7 +479,7 @@ class ClaudeSDKManager:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(run_task),
-                        timeout=self.config.claude_timeout_seconds,
+                        timeout=effective_timeout,
                     )
                     break  # success — exit retry loop
                 except asyncio.CancelledError:
@@ -610,12 +612,13 @@ class ClaudeSDKManager:
             )
 
         except asyncio.TimeoutError:
+            effective_timeout = timeout_override or self.config.claude_timeout_seconds
             logger.error(
                 "Claude SDK command timed out",
-                timeout_seconds=self.config.claude_timeout_seconds,
+                timeout_seconds=effective_timeout,
             )
             raise ClaudeTimeoutError(
-                f"Claude SDK timed out after {self.config.claude_timeout_seconds}s"
+                f"Claude SDK timed out after {effective_timeout}s"
             )
 
         except CLINotFoundError as e:

@@ -5,7 +5,7 @@ NotificationHandler: subscribes to AgentResponseEvent and delivers to Telegram.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import structlog
 
@@ -30,11 +30,13 @@ class AgentHandler:
         claude_integration: ClaudeIntegration,
         default_working_directory: Path,
         default_user_id: int = 0,
+        scheduled_timeout_seconds: Optional[int] = None,
     ) -> None:
         self.event_bus = event_bus
         self.claude = claude_integration
         self.default_working_directory = default_working_directory
         self.default_user_id = default_user_id
+        self.scheduled_timeout_seconds = scheduled_timeout_seconds
 
     def register(self) -> None:
         """Subscribe to events that need agent processing."""
@@ -106,6 +108,7 @@ class AgentHandler:
                 working_directory=working_dir,
                 user_id=self.default_user_id,
                 force_new=True,
+                timeout_override=self.scheduled_timeout_seconds,
             )
 
             if response.content:

@@ -168,6 +168,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         claude_integration=claude_integration,
         default_working_directory=config.approved_directory,
         default_user_id=config.allowed_users[0] if config.allowed_users else 0,
+        scheduled_timeout_seconds=config.claude_scheduled_timeout_seconds,
     )
     agent_handler.register()
 

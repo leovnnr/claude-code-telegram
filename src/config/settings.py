@@ -19,6 +19,7 @@ from src.utils.constants import (
     DEFAULT_CLAUDE_MAX_COST_PER_REQUEST,
     DEFAULT_CLAUDE_MAX_COST_PER_USER,
     DEFAULT_CLAUDE_MAX_TURNS,
+    DEFAULT_CLAUDE_SCHEDULED_TIMEOUT_SECONDS,
     DEFAULT_CLAUDE_TIMEOUT_SECONDS,
     DEFAULT_DATABASE_URL,
     DEFAULT_MAX_SESSIONS_PER_USER,
@@ -86,6 +87,10 @@ class Settings(BaseSettings):
     )
     claude_timeout_seconds: int = Field(
         DEFAULT_CLAUDE_TIMEOUT_SECONDS, description="Claude timeout"
+    )
+    claude_scheduled_timeout_seconds: int = Field(
+        DEFAULT_CLAUDE_SCHEDULED_TIMEOUT_SECONDS,
+        description="Claude timeout for scheduled tasks (scan-auto, report-auto)",
     )
     claude_max_cost_per_user: float = Field(
         DEFAULT_CLAUDE_MAX_COST_PER_USER, description="Max cost per user"
