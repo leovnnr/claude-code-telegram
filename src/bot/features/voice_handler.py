@@ -1,8 +1,11 @@
-"""Handle voice message transcription via Mistral (Voxtral), OpenAI (Whisper), or local whisper.cpp."""
+"""Handle voice message transcription via AssemblyAI, Mistral (Voxtral), OpenAI (Whisper), or local whisper.cpp."""
 
 import asyncio
+import json
 import shutil
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -26,16 +29,21 @@ class ProcessedVoice:
 
 
 class VoiceHandler:
-    """Transcribe Telegram voice messages using Mistral, OpenAI, or local whisper.cpp."""
+    """Transcribe Telegram voice messages using AssemblyAI, Mistral, OpenAI, or local whisper.cpp."""
 
     # Timeout (seconds) for ffmpeg and whisper.cpp subprocess calls.
     LOCAL_SUBPROCESS_TIMEOUT: int = 120
+
+    # Timeout (seconds) for AssemblyAI polling.
+    ASSEMBLYAI_POLL_TIMEOUT: int = 120
+    ASSEMBLYAI_POLL_INTERVAL: float = 1.5
 
     def __init__(self, config: Settings):
         self.config = config
         self._mistral_client: Optional[Any] = None
         self._openai_client: Optional[Any] = None
         self._resolved_whisper_binary: Optional[str] = None
+        self._assemblyai_keyterms: Optional[list[str]] = None
 
     def _ensure_allowed_file_size(self, file_size: Optional[int]) -> None:
         """Reject files that exceed the configured max size."""
@@ -87,7 +95,9 @@ class VoiceHandler:
             file_size=initial_file_size or resolved_file_size or len(voice_bytes),
         )
 
-        if self.config.voice_provider == "local":
+        if self.config.voice_provider == "assemblyai":
+            transcription = await self._transcribe_assemblyai(voice_bytes)
+        elif self.config.voice_provider == "local":
             transcription = await self._transcribe_local(voice_bytes)
         elif self.config.voice_provider == "openai":
             transcription = await self._transcribe_openai(voice_bytes)
@@ -112,6 +122,137 @@ class VoiceHandler:
             transcription=transcription,
             duration=duration_secs,
         )
+
+    # -- AssemblyAI provider --
+
+    def _load_keyterms(self) -> list[str]:
+        """Load keyterms from JSON file for AssemblyAI vocabulary boost."""
+        if self._assemblyai_keyterms is not None:
+            return self._assemblyai_keyterms
+
+        keyterms_path = self.config.assemblyai_keyterms_path
+        if not keyterms_path or not Path(keyterms_path).is_file():
+            self._assemblyai_keyterms = []
+            return self._assemblyai_keyterms
+
+        with open(keyterms_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # keyterms file format: {"term": frequency, ...}
+        self._assemblyai_keyterms = list(data.keys())
+        logger.info(
+            "Loaded AssemblyAI keyterms",
+            count=len(self._assemblyai_keyterms),
+        )
+        return self._assemblyai_keyterms
+
+    async def _transcribe_assemblyai(self, voice_bytes: bytes) -> str:
+        """Transcribe audio using AssemblyAI REST API with keyterms_prompt."""
+        api_key = self.config.assemblyai_api_key_str
+        if not api_key:
+            raise RuntimeError("AssemblyAI API key is not configured.")
+
+        headers = {"authorization": api_key}
+
+        # Step 1: Upload audio
+        upload_url = await self._assemblyai_upload(voice_bytes, headers)
+
+        # Step 2: Request transcription
+        keyterms = self._load_keyterms()
+        transcript_request: dict[str, Any] = {
+            "audio_url": upload_url,
+            "speech_models": ["universal-3-pro"],
+            "language_detection": True,
+        }
+        if keyterms:
+            transcript_request["keyterms_prompt"] = keyterms
+
+        req_data = json.dumps(transcript_request).encode("utf-8")
+        req = urllib.request.Request(
+            "https://api.assemblyai.com/v2/transcript",
+            data=req_data,
+            headers={**headers, "content-type": "application/json"},
+            method="POST",
+        )
+
+        loop = asyncio.get_event_loop()
+        response_data = await loop.run_in_executor(
+            None, self._assemblyai_http_call, req
+        )
+        transcript_id = response_data["id"]
+
+        # Step 3: Poll for completion
+        text = await self._assemblyai_poll(transcript_id, headers)
+        return text
+
+    async def _assemblyai_upload(
+        self, voice_bytes: bytes, headers: dict[str, str]
+    ) -> str:
+        """Upload audio bytes to AssemblyAI and return the upload URL."""
+        req = urllib.request.Request(
+            "https://api.assemblyai.com/v2/upload",
+            data=voice_bytes,
+            headers={**headers, "content-type": "application/octet-stream"},
+            method="POST",
+        )
+        loop = asyncio.get_event_loop()
+        response_data = await loop.run_in_executor(
+            None, self._assemblyai_http_call, req
+        )
+        upload_url = response_data.get("upload_url")
+        if not upload_url:
+            raise RuntimeError("AssemblyAI upload did not return an upload_url.")
+        return upload_url
+
+    async def _assemblyai_poll(
+        self, transcript_id: str, headers: dict[str, str]
+    ) -> str:
+        """Poll AssemblyAI until transcription completes or fails."""
+        url = f"https://api.assemblyai.com/v2/transcript/{transcript_id}"
+        req = urllib.request.Request(url, headers=headers, method="GET")
+        loop = asyncio.get_event_loop()
+
+        elapsed = 0.0
+        while elapsed < self.ASSEMBLYAI_POLL_TIMEOUT:
+            response_data = await loop.run_in_executor(
+                None, self._assemblyai_http_call, req
+            )
+            status = response_data.get("status")
+
+            if status == "completed":
+                text = (response_data.get("text") or "").strip()
+                if not text:
+                    raise ValueError(
+                        "AssemblyAI transcription completed but returned empty text."
+                    )
+                return text
+            elif status == "error":
+                error_msg = response_data.get("error", "Unknown error")
+                raise RuntimeError(
+                    f"AssemblyAI transcription failed: {error_msg}"
+                )
+
+            await asyncio.sleep(self.ASSEMBLYAI_POLL_INTERVAL)
+            elapsed += self.ASSEMBLYAI_POLL_INTERVAL
+
+        raise RuntimeError(
+            f"AssemblyAI transcription timed out after {self.ASSEMBLYAI_POLL_TIMEOUT}s."
+        )
+
+    def _assemblyai_http_call(self, req: urllib.request.Request) -> dict[str, Any]:
+        """Execute a synchronous HTTP request and return parsed JSON."""
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")[:200]
+            raise RuntimeError(
+                f"AssemblyAI HTTP {exc.code}: {body}"
+            ) from exc
+        except urllib.error.URLError as exc:
+            raise RuntimeError(
+                f"AssemblyAI request failed: {exc.reason}"
+            ) from exc
 
     # -- Mistral provider --
 

@@ -206,9 +206,16 @@ class Settings(BaseSettings):
     enable_voice_messages: bool = Field(
         True, description="Enable voice message transcription"
     )
-    voice_provider: Literal["mistral", "openai", "local"] = Field(
-        "mistral",
-        description="Voice transcription provider: 'mistral', 'openai', or 'local'",
+    voice_provider: Literal["mistral", "openai", "local", "assemblyai"] = Field(
+        "assemblyai",
+        description="Voice transcription provider: 'assemblyai', 'mistral', 'openai', or 'local'",
+    )
+    assemblyai_api_key: Optional[SecretStr] = Field(
+        None, description="AssemblyAI API key for voice transcription"
+    )
+    assemblyai_keyterms_path: Optional[str] = Field(
+        None,
+        description="Path to keyterms JSON file for AssemblyAI vocabulary boost",
     )
     mistral_api_key: Optional[SecretStr] = Field(
         None, description="Mistral API key for voice transcription"
@@ -445,11 +452,11 @@ class Settings(BaseSettings):
     def validate_voice_provider(cls, v: Any) -> str:
         """Validate and normalize voice transcription provider."""
         if v is None:
-            return "mistral"
+            return "assemblyai"
         provider = str(v).strip().lower()
-        if provider not in {"mistral", "openai", "local"}:
+        if provider not in {"mistral", "openai", "local", "assemblyai"}:
             raise ValueError(
-                "voice_provider must be one of ['mistral', 'openai', 'local']"
+                "voice_provider must be one of ['assemblyai', 'mistral', 'openai', 'local']"
             )
         return provider
 
@@ -541,6 +548,15 @@ class Settings(BaseSettings):
         )
 
     @property
+    def assemblyai_api_key_str(self) -> Optional[str]:
+        """Get AssemblyAI API key as string."""
+        return (
+            self.assemblyai_api_key.get_secret_value()
+            if self.assemblyai_api_key
+            else None
+        )
+
+    @property
     def mistral_api_key_str(self) -> Optional[str]:
         """Get Mistral API key as string."""
         return self.mistral_api_key.get_secret_value() if self.mistral_api_key else None
@@ -555,6 +571,8 @@ class Settings(BaseSettings):
         """Get the voice transcription model, with provider-specific defaults."""
         if self.voice_transcription_model:
             return self.voice_transcription_model
+        if self.voice_provider == "assemblyai":
+            return "universal-3-pro"
         if self.voice_provider == "openai":
             return "whisper-1"
         if self.voice_provider == "local":
@@ -569,6 +587,8 @@ class Settings(BaseSettings):
     @property
     def voice_provider_api_key_env(self) -> str:
         """API key environment variable required for the configured voice provider."""
+        if self.voice_provider == "assemblyai":
+            return "ASSEMBLYAI_API_KEY"
         if self.voice_provider == "openai":
             return "OPENAI_API_KEY"
         if self.voice_provider == "local":
@@ -578,6 +598,8 @@ class Settings(BaseSettings):
     @property
     def voice_provider_display_name(self) -> str:
         """Human-friendly label for the configured voice provider."""
+        if self.voice_provider == "assemblyai":
+            return "AssemblyAI"
         if self.voice_provider == "openai":
             return "OpenAI Whisper"
         if self.voice_provider == "local":
