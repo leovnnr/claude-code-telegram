@@ -82,9 +82,11 @@ context.bot_data["security_validator"]
 
 ### Security Model
 
-5-layer defense: authentication (whitelist/token) -> directory isolation (APPROVED_DIRECTORY + path traversal prevention) -> input validation (blocks `..`, `;`, `&&`, `$()`, etc.) -> rate limiting (token bucket) -> audit logging.
+5-layer defense: authentication (whitelist/token) -> directory isolation (APPROVED_DIRECTORY + optional ADDITIONAL_APPROVED_DIRECTORIES allowlist + path traversal prevention) -> input validation (blocks `..`, `;`, `&&`, `$()`, etc.) -> rate limiting (token bucket) -> audit logging.
 
-`SecurityValidator` blocks access to secrets (`.env`, `.ssh`, `id_rsa`, `.pem`) and dangerous shell patterns. Can be relaxed with `DISABLE_SECURITY_PATTERNS=true` (trusted environments only).
+Directory isolation: file/bash operations must resolve inside `APPROVED_DIRECTORY` or one of `ADDITIONAL_APPROVED_DIRECTORIES` (a precise allowlist of extra roots — e.g. an Obsidian vault or memory store — preferred over widening `APPROVED_DIRECTORY` to a broad parent).
+
+`SecurityValidator.validate_path` blocks access to secrets (`.env`, `.ssh/`, `id_rsa`, `*.pem`, `*.key`, …) even inside an approved directory, plus dangerous shell patterns. Can be relaxed with `DISABLE_SECURITY_PATTERNS=true` (trusted environments only).
 
 `ToolMonitor` validates Claude's tool calls against allowlist/disallowlist, file path boundaries, and dangerous bash patterns. Tool name validation can be bypassed with `DISABLE_TOOL_VALIDATION=true`.
 
@@ -92,7 +94,7 @@ Webhook authentication: GitHub HMAC-SHA256 signature verification, generic Beare
 
 ### Configuration
 
-Settings loaded from environment variables via Pydantic Settings. Required: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `APPROVED_DIRECTORY`. Key optional: `ALLOWED_USERS` (comma-separated Telegram IDs), `ANTHROPIC_API_KEY`, `ENABLE_MCP`, `MCP_CONFIG_PATH`.
+Settings loaded from environment variables via Pydantic Settings. Required: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_BOT_USERNAME`, `APPROVED_DIRECTORY`. Key optional: `ALLOWED_USERS` (comma-separated Telegram IDs), `ADDITIONAL_APPROVED_DIRECTORIES` (comma-separated extra writable roots, each must exist at startup), `ANTHROPIC_API_KEY`, `ENABLE_MCP`, `MCP_CONFIG_PATH`.
 
 Agentic platform settings: `AGENTIC_MODE` (default true), `ENABLE_API_SERVER`, `API_SERVER_PORT` (default 8080), `GITHUB_WEBHOOK_SECRET`, `WEBHOOK_API_SECRET`, `ENABLE_SCHEDULER`, `NOTIFICATION_CHAT_IDS`.
 

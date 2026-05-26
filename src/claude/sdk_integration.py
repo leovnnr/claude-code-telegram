@@ -4,7 +4,7 @@ import asyncio
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Sequence
 
 import structlog
 from claude_agent_sdk import (
@@ -182,6 +182,7 @@ def _make_can_use_tool_callback(
     security_validator: SecurityValidator,
     working_directory: Path,
     approved_directory: Path,
+    additional_directories: Optional[Sequence[Path]] = None,
 ) -> Any:
     """Create a can_use_tool callback for SDK-level tool permission validation.
 
@@ -221,7 +222,10 @@ def _make_can_use_tool_callback(
             command = tool_input.get("command", "")
             if command:
                 valid, error = check_bash_directory_boundary(
-                    command, working_directory, approved_directory
+                    command,
+                    working_directory,
+                    approved_directory,
+                    additional_directories,
                 )
                 if not valid:
                     logger.warning(
@@ -299,10 +303,21 @@ class ClaudeSDKManager:
                 logger.debug("Claude CLI stderr", line=line)
 
             # Build system prompt, loading CLAUDE.md from working directory if present
-            base_prompt = (
-                f"All file operations must stay within {working_directory}. "
-                "Use relative paths."
-            )
+            extra_dirs = list(self.config.additional_approved_directories or [])
+            if extra_dirs:
+                allowed = ", ".join(
+                    [str(working_directory)] + [str(d) for d in extra_dirs]
+                )
+                base_prompt = (
+                    f"File operations must stay within these directories: {allowed}. "
+                    f"Use relative paths inside {working_directory}; use absolute "
+                    "paths for the other allowed directories."
+                )
+            else:
+                base_prompt = (
+                    f"All file operations must stay within {working_directory}. "
+                    "Use relative paths."
+                )
             claude_md_path = Path(working_directory) / "CLAUDE.md"
             if claude_md_path.exists():
                 base_prompt += "\n\n" + claude_md_path.read_text(encoding="utf-8")
@@ -355,6 +370,7 @@ class ClaudeSDKManager:
                     security_validator=self.security_validator,
                     working_directory=working_directory,
                     approved_directory=self.config.approved_directory,
+                    additional_directories=self.config.additional_approved_directories,
                 )
 
             # Resume previous session if we have a session_id

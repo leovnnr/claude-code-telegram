@@ -10,10 +10,10 @@ Features:
 
 import json
 from pathlib import Path
-from typing import Any, List, Literal, Optional
+from typing import Annotated, Any, List, Literal, Optional
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from src.utils.constants import (
     DEFAULT_CLAUDE_MAX_COST_PER_REQUEST,
@@ -46,6 +46,15 @@ class Settings(BaseSettings):
 
     # Security
     approved_directory: Path = Field(..., description="Base directory for projects")
+    # NoDecode: take the raw env string so the validator can comma-split it
+    # (pydantic-settings would otherwise try to JSON-decode a List field).
+    additional_approved_directories: Annotated[List[Path], NoDecode] = Field(
+        default_factory=list,
+        description=(
+            "Extra directories (comma-separated) outside approved_directory that "
+            "file operations may also reach, e.g. an Obsidian vault or memory store"
+        ),
+    )
     allowed_users: Optional[List[int]] = Field(
         None, description="Allowed Telegram user IDs"
     )
@@ -385,6 +394,35 @@ class Settings(BaseSettings):
         if not path.is_dir():
             raise ValueError(f"Approved directory is not a directory: {path}")
         return path  # type: ignore[no-any-return]
+
+    @field_validator("additional_approved_directories", mode="before")
+    @classmethod
+    def validate_additional_approved_directories(cls, v: Any) -> List[Path]:
+        """Parse a comma-separated list of extra approved directories.
+
+        Each entry must exist and be a directory; raising early surfaces a
+        misconfigured allowlist at startup rather than as a silent denial.
+        """
+        if not v:
+            return []
+        if isinstance(v, str):
+            raw = [item.strip() for item in v.split(",") if item.strip()]
+        elif isinstance(v, (list, tuple)):
+            raw = [str(item).strip() for item in v if str(item).strip()]
+        else:
+            return v  # type: ignore[no-any-return]
+
+        resolved: List[Path] = []
+        for item in raw:
+            path = Path(item).resolve()
+            if not path.exists():
+                raise ValueError(f"Additional approved directory does not exist: {path}")
+            if not path.is_dir():
+                raise ValueError(
+                    f"Additional approved directory is not a directory: {path}"
+                )
+            resolved.append(path)
+        return resolved
 
     @field_validator("mcp_config_path", mode="before")
     @classmethod

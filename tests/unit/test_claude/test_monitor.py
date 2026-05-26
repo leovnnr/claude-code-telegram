@@ -235,6 +235,50 @@ class TestCheckBashDirectoryBoundary:
         assert "/tmp" in error
 
 
+class TestAdditionalDirectories:
+    """Boundary checks with an extra allowlist of approved directories."""
+
+    def setup_method(self) -> None:
+        self.approved = Path("/root/projects")
+        self.cwd = Path("/root/projects/myapp")
+        self.extra = [Path("/data/vault"), Path("/data/memory")]
+
+    def test_write_into_additional_directory_allowed(self) -> None:
+        valid, error = check_bash_directory_boundary(
+            "touch /data/vault/note.md", self.cwd, self.approved, self.extra
+        )
+        assert valid
+        assert error is None
+
+    def test_write_into_second_additional_directory_allowed(self) -> None:
+        valid, error = check_bash_directory_boundary(
+            "mkdir -p /data/memory/sub", self.cwd, self.approved, self.extra
+        )
+        assert valid
+        assert error is None
+
+    def test_write_outside_all_roots_blocked(self) -> None:
+        valid, error = check_bash_directory_boundary(
+            "touch /data/other/secret", self.cwd, self.approved, self.extra
+        )
+        assert not valid
+        assert "/data/other/secret" in error
+
+    def test_primary_approved_still_allowed_with_extras(self) -> None:
+        valid, error = check_bash_directory_boundary(
+            "touch /root/projects/myapp/file.txt", self.cwd, self.approved, self.extra
+        )
+        assert valid
+        assert error is None
+
+    def test_no_additional_directories_is_backward_compatible(self) -> None:
+        valid, error = check_bash_directory_boundary(
+            "touch /data/vault/note.md", self.cwd, self.approved
+        )
+        assert not valid
+        assert "/data/vault/note.md" in error
+
+
 class TestIsClaudeInternalPath:
     """Test the _is_claude_internal_path helper function."""
 

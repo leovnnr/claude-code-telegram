@@ -349,3 +349,103 @@ class TestSecurityValidator:
         assert "  " not in sanitized  # No double spaces
         assert not sanitized.startswith(" ")  # No leading space
         assert not sanitized.endswith(" ")  # No trailing space
+
+
+class TestAdditionalApprovedDirectories:
+    """Path validation with an explicit allowlist of extra directories."""
+
+    @pytest.fixture
+    def dirs(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base = Path(temp_dir)
+            approved = base / "approved"
+            vault = base / "vault"
+            memory = base / "memory"
+            for d in (approved, vault, memory):
+                d.mkdir()
+            yield approved, vault, memory
+
+    @pytest.fixture
+    def validator(self, dirs):
+        approved, vault, memory = dirs
+        return SecurityValidator(
+            approved, additional_approved_directories=[vault, memory]
+        )
+
+    def test_path_in_additional_directory_allowed(self, validator, dirs):
+        _approved, vault, _memory = dirs
+        valid, path, error = validator.validate_path(str(vault / "note.md"))
+        assert valid is True
+        assert path == (vault / "note.md").resolve()
+        assert error is None
+
+    def test_path_in_second_additional_directory_allowed(self, validator, dirs):
+        _approved, _vault, memory = dirs
+        valid, path, error = validator.validate_path(str(memory / "fact.md"))
+        assert valid is True
+        assert error is None
+
+    def test_path_in_primary_approved_still_allowed(self, validator, dirs):
+        approved, _vault, _memory = dirs
+        valid, path, error = validator.validate_path(str(approved / "x.md"))
+        assert valid is True
+        assert error is None
+
+    def test_path_outside_all_roots_blocked(self, validator, dirs):
+        approved, _vault, _memory = dirs
+        outside = approved.parent / "elsewhere" / "file.md"
+        valid, path, error = validator.validate_path(str(outside))
+        assert valid is False
+        assert "outside approved directory" in error
+
+    def test_approved_roots_property(self, validator, dirs):
+        approved, vault, memory = dirs
+        assert validator.approved_roots == [
+            approved.resolve(),
+            vault.resolve(),
+            memory.resolve(),
+        ]
+
+
+class TestSensitivePathBlocking:
+    """Credential/key material is refused even inside an approved directory."""
+
+    @pytest.fixture
+    def validator(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            approved = Path(temp_dir) / "approved"
+            approved.mkdir()
+            yield SecurityValidator(approved)
+
+    def test_dotenv_file_blocked(self, validator):
+        valid, _path, error = validator.validate_path(".env")
+        assert valid is False
+        assert "sensitive" in error.lower()
+
+    def test_pem_file_blocked(self, validator):
+        valid, _path, error = validator.validate_path("certs/server.pem")
+        assert valid is False
+        assert "sensitive" in error.lower()
+
+    def test_id_rsa_blocked(self, validator):
+        valid, _path, error = validator.validate_path("id_rsa")
+        assert valid is False
+        assert "sensitive" in error.lower()
+
+    def test_ssh_directory_component_blocked(self, validator):
+        valid, _path, error = validator.validate_path(".ssh/known_hosts")
+        assert valid is False
+        assert "sensitive" in error.lower()
+
+    def test_ordinary_markdown_allowed(self, validator):
+        valid, _path, error = validator.validate_path("notes/journal.md")
+        assert valid is True
+        assert error is None
+
+    def test_sensitive_check_skipped_when_patterns_disabled(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            approved = Path(temp_dir) / "approved"
+            approved.mkdir()
+            validator = SecurityValidator(approved, disable_security_patterns=True)
+            valid, _path, _error = validator.validate_path("id_rsa")
+            assert valid is True

@@ -132,16 +132,36 @@ class SecurityValidator:
     ]
 
     def __init__(
-        self, approved_directory: Path, disable_security_patterns: bool = False
+        self,
+        approved_directory: Path,
+        disable_security_patterns: bool = False,
+        additional_approved_directories: Optional[List[Path]] = None,
     ):
-        """Initialize validator with approved directory."""
+        """Initialize validator with approved directory.
+
+        ``additional_approved_directories`` lets file operations also reach a
+        small, explicit allowlist of directories *outside* the primary
+        ``approved_directory`` (e.g. an Obsidian vault or a memory store)
+        without opening the whole parent tree.
+        """
         self.approved_directory = approved_directory.resolve()
+        self.additional_approved_directories = [
+            d.resolve() for d in (additional_approved_directories or [])
+        ]
         self.disable_security_patterns = disable_security_patterns
         logger.info(
             "Security validator initialized",
             approved_directory=str(self.approved_directory),
+            additional_approved_directories=[
+                str(d) for d in self.additional_approved_directories
+            ],
             disable_security_patterns=self.disable_security_patterns,
         )
+
+    @property
+    def approved_roots(self) -> List[Path]:
+        """All directories a path is allowed to resolve into."""
+        return [self.approved_directory, *self.additional_approved_directories]
 
     def validate_path(
         self, user_path: str, current_dir: Optional[Path] = None
@@ -186,15 +206,30 @@ class SecurityValidator:
             # Resolve path and check boundaries
             target = target.resolve()
 
-            # Ensure target is within approved directory
-            if not self._is_within_directory(target, self.approved_directory):
+            # Ensure target is within one of the approved directories
+            if not any(
+                self._is_within_directory(target, root) for root in self.approved_roots
+            ):
                 logger.warning(
                     "Path traversal attempt detected",
                     requested_path=user_path,
                     resolved_path=str(target),
                     approved_directory=str(self.approved_directory),
+                    additional_approved_directories=[
+                        str(d) for d in self.additional_approved_directories
+                    ],
                 )
                 return False, None, "Access denied: path outside approved directory"
+
+            # Even inside an approved directory, never expose credential or
+            # key material (the path may sit in a wide allowlisted tree).
+            if not self.disable_security_patterns and self._is_sensitive_path(target):
+                logger.warning(
+                    "Sensitive file access blocked",
+                    requested_path=user_path,
+                    resolved_path=str(target),
+                )
+                return False, None, "Access denied: sensitive file"
 
             logger.debug(
                 "Path validation successful",
@@ -214,6 +249,24 @@ class SecurityValidator:
             return True
         except ValueError:
             return False
+
+    def _is_sensitive_path(self, path: Path) -> bool:
+        """Return True if *path* points at credential, key or secret material.
+
+        Mirrors the protection ``validate_filename`` applies to uploads, but
+        works on a resolved path so it also catches sensitive files reached via
+        an allowlisted directory (``.env``, ``.ssh/``, ``id_rsa``, ``*.pem`` …).
+        """
+        forbidden = {name.lower() for name in self.FORBIDDEN_FILENAMES}
+        # Any path component matching a forbidden name (file or parent dir).
+        if any(part.lower() in forbidden for part in path.parts):
+            return True
+        # Filename matching a dangerous file pattern (keys, certs, …).
+        name = path.name
+        for pattern in self.DANGEROUS_FILE_PATTERNS:
+            if re.match(pattern, name, re.IGNORECASE):
+                return True
+        return False
 
     def validate_filename(self, filename: str) -> Tuple[bool, Optional[str]]:
         """Validate uploaded filename.
@@ -380,6 +433,9 @@ class SecurityValidator:
         """Get summary of security validation rules."""
         return {
             "approved_directory": str(self.approved_directory),
+            "additional_approved_directories": [
+                str(d) for d in self.additional_approved_directories
+            ],
             "allowed_extensions": sorted(list(self.ALLOWED_EXTENSIONS)),
             "forbidden_filenames": sorted(list(self.FORBIDDEN_FILENAMES)),
             "dangerous_patterns_count": len(self.DANGEROUS_PATTERNS),

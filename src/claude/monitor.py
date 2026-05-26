@@ -2,7 +2,7 @@
 
 import shlex
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from typing import Optional, Sequence, Set, Tuple
 
 # Subdirectories under ~/.claude/ that Claude Code uses internally.
 _CLAUDE_INTERNAL_SUBDIRS: Set[str] = {"plans", "todos", "settings.json"}
@@ -62,8 +62,14 @@ def check_bash_directory_boundary(
     command: str,
     working_directory: Path,
     approved_directory: Path,
+    additional_directories: Optional[Sequence[Path]] = None,
 ) -> Tuple[bool, Optional[str]]:
-    """Check if a bash command's paths stay within the approved directory."""
+    """Check if a bash command's paths stay within an approved directory.
+
+    A path is accepted if it resolves inside ``approved_directory`` or inside
+    any of ``additional_directories`` (an explicit allowlist of extra roots,
+    e.g. an Obsidian vault or memory store).
+    """
     try:
         tokens = shlex.split(command)
     except ValueError:
@@ -90,6 +96,9 @@ def check_bash_directory_boundary(
         command_chains.append(current_chain)
 
     resolved_approved = approved_directory.resolve()
+    resolved_roots = [resolved_approved, *(
+        d.resolve() for d in (additional_directories or [])
+    )]
 
     # Check each command in the chain
     for cmd_tokens in command_chains:
@@ -127,7 +136,9 @@ def check_bash_directory_boundary(
                 else:
                     resolved = (working_directory / token).resolve()
 
-                if not _is_within_directory(resolved, resolved_approved):
+                if not any(
+                    _is_within_directory(resolved, root) for root in resolved_roots
+                ):
                     return False, (
                         f"Directory boundary violation: '{base_command}' targets "
                         f"'{token}' which is outside approved directory "
