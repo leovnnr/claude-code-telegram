@@ -99,7 +99,7 @@ class Settings(BaseSettings):
     )
     claude_scheduled_timeout_seconds: int = Field(
         DEFAULT_CLAUDE_SCHEDULED_TIMEOUT_SECONDS,
-        description="Claude timeout for scheduled tasks (scan-auto, report-auto)",
+        description="Claude timeout for scheduled tasks (articles-digest)",
     )
     claude_max_cost_per_user: float = Field(
         DEFAULT_CLAUDE_MAX_COST_PER_USER, description="Max cost per user"

@@ -51,6 +51,11 @@ def setup_logging(debug: bool = False) -> None:
         stream=sys.stdout,
     )
 
+    # httpx logs the full request URL at INFO — which includes the bot token for
+    # every Telegram API call (~8600 lines/day, token in cleartext in journald).
+    # WARNING keeps real HTTP errors and drops the noise.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
     # Configure structlog
     structlog.configure(
         processors=[
